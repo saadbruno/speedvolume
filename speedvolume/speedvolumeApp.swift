@@ -6,27 +6,28 @@
 //
 
 import SwiftUI
-import SwiftData
 
 @main
 struct speedvolumeApp: App {
-    var sharedModelContainer: ModelContainer = {
-        let schema = Schema([
-            Item.self,
-        ])
-        let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
-
-        do {
-            return try ModelContainer(for: schema, configurations: [modelConfiguration])
-        } catch {
-            fatalError("Could not create ModelContainer: \(error)")
-        }
-    }()
+    @State private var speedMonitor = SpeedMonitor()
+    @State private var audioDucking = AudioDuckingController()
+    @State private var liveActivity = SpeedLiveActivityController()
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            ContentView(
+                speedMonitor: speedMonitor,
+                audioDucking: audioDucking,
+                liveActivity: liveActivity
+            )
+                .task {
+                    speedMonitor.requestPermissionOnLaunch()
+                    speedMonitor.start()
+                    await liveActivity.startOrUpdate(
+                        speedMPH: speedMonitor.speedMPH,
+                        isDuckingEnabled: true
+                    )
+                }
         }
-        .modelContainer(sharedModelContainer)
     }
 }

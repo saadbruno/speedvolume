@@ -6,13 +6,26 @@
 //
 
 import CoreLocation
-import MediaPlayer
+import Foundation
+import AVFAudio
+import Observation
 import SwiftUI
 
 struct ContentView: View {
-    @StateObject private var speedMonitor = SpeedMonitor()
-    @State private var targetVolume: Float = 0.3
-    @State private var volumeMode: VolumeMode = .low
+    @State private var speedMonitor: SpeedMonitor
+    @State private var audioDucking: AudioDuckingController
+    @State private var liveActivity: SpeedLiveActivityController
+    @State private var audioMode: SpeedAudioMode = .duckingEnabled
+
+    init(
+        speedMonitor: SpeedMonitor = SpeedMonitor(),
+        audioDucking: AudioDuckingController = AudioDuckingController(),
+        liveActivity: SpeedLiveActivityController = SpeedLiveActivityController()
+    ) {
+        self.speedMonitor = speedMonitor
+        self.audioDucking = audioDucking
+        self.liveActivity = liveActivity
+    }
 
     var body: some View {
         ZStack {
@@ -23,7 +36,7 @@ struct ContentView: View {
                 Text(speedMonitor.speedText)
                     .font(.system(size: 88, weight: .bold, design: .rounded))
                     .monospacedDigit()
-                    .foregroundStyle(volumeMode.textColor)
+                    .foregroundStyle(audioMode.textColor)
                     .minimumScaleFactor(0.45)
                     .lineLimit(1)
                     .contentTransition(.numericText(value: speedMonitor.speedMPH))
@@ -34,75 +47,144 @@ struct ContentView: View {
                     .foregroundStyle(.white.opacity(0.68))
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 24)
+
+                Text(speedMonitor.backgroundStatusText)
+                    .font(.system(size: 14, weight: .medium, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.5))
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+
+                Text(audioDucking.statusText)
+                    .font(.system(size: 14, weight: .medium, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.5))
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+
+                Text(liveActivity.statusText)
+                    .font(.system(size: 14, weight: .medium, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.5))
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
             }
             .padding(.horizontal, 24)
-
-            SystemVolumeView(volume: targetVolume)
-                .frame(width: 1, height: 1)
-                .opacity(0.01)
-                .accessibilityHidden(true)
         }
         .onAppear {
             speedMonitor.start()
-            updateVolumeMode(for: speedMonitor.speedMPH)
+            updateAudioMode(for: speedMonitor.speedMPH)
         }
         .onDisappear {
-            speedMonitor.stop()
+            speedMonitor.prepareForViewDisappearance()
         }
         .onChange(of: speedMonitor.speedMPH) { _, speedMPH in
-            updateVolumeMode(for: speedMPH)
+            updateAudioMode(for: speedMPH)
+        }
+        .task(id: liveActivityUpdateID) {
+            await liveActivity.startOrUpdate(
+                speedMPH: speedMonitor.speedMPH,
+                isDuckingEnabled: audioMode.isDuckingEnabled
+            )
         }
     }
 
-    private func updateVolumeMode(for speedMPH: Double) {
+    private var liveActivityUpdateID: String {
+        "\(speedMonitor.speedText)-\(audioMode.isDuckingEnabled)"
+    }
+
+    private func updateAudioMode(for speedMPH: Double) {
         if speedMPH > 7 {
-            setVolumeMode(.high)
+            setAudioMode(.duckingDisabled)
         } else if speedMPH < 5 {
-            setVolumeMode(.low)
+            setAudioMode(.duckingEnabled)
         }
     }
 
-    private func setVolumeMode(_ mode: VolumeMode) {
-        guard volumeMode != mode else { return }
-
-        volumeMode = mode
-        targetVolume = mode.volume
+    private func setAudioMode(_ mode: SpeedAudioMode) {
+        audioMode = mode
+        audioDucking.setDuckingEnabled(mode.isDuckingEnabled)
     }
 }
 
-private enum VolumeMode {
-    case high
-    case low
+private enum SpeedAudioMode {
+    case duckingDisabled
+    case duckingEnabled
 
-    var volume: Float {
+    var isDuckingEnabled: Bool {
         switch self {
-        case .high:
-            return 1.0
-        case .low:
-            return 0.3
+        case .duckingDisabled:
+            return false
+        case .duckingEnabled:
+            return true
         }
     }
 
     var textColor: Color {
         switch self {
-        case .high:
+        case .duckingDisabled:
             return .white
-        case .low:
+        case .duckingEnabled:
             return .yellow
         }
     }
 }
 
-private final class SpeedMonitor: NSObject, ObservableObject {
-    @Published private(set) var speedMPH = 0.0
-    @Published private(set) var authorizationStatus: CLAuthorizationStatus = .notDetermined
-    @Published private(set) var lastError: String?
+@Observable
+final class AudioDuckingController {
+    private(set) var isDuckingEnabled = false
+    private(set) var lastError: String?
+
+    private let session = AVAudioSession.sharedInstance()
+
+    var statusText: String {
+        if let lastError {
+            return lastError
+        }
+
+        return isDuckingEnabled ? "Audio ducking ativado." : "Audio ducking desativado."
+    }
+
+    func setDuckingEnabled(_ isEnabled: Bool) {
+        isEnabled ? enableDucking() : disableDucking()
+    }
+
+    func enableDucking() {
+        guard !isDuckingEnabled else { return }
+
+        do {
+            try session.setCategory(.playback, mode: .default, options: [.duckOthers])
+            try session.setActive(true)
+            isDuckingEnabled = true
+            lastError = nil
+        } catch {
+            lastError = "Nao foi possivel ativar o audio ducking."
+        }
+    }
+
+    func disableDucking() {
+        guard isDuckingEnabled else { return }
+
+        do {
+            try session.setActive(false, options: .notifyOthersOnDeactivation)
+            isDuckingEnabled = false
+            lastError = nil
+        } catch {
+            lastError = "Nao foi possivel desativar o audio ducking."
+        }
+    }
+}
+
+@Observable
+final class SpeedMonitor: NSObject {
+    private(set) var speedMPH = 0.0
+    private(set) var authorizationStatus: CLAuthorizationStatus = .notDetermined
+    private(set) var lastError: String?
+    private(set) var isBackgroundLocationEnabled = false
 
     private let locationManager = CLLocationManager()
     private let metersPerSecondToMilesPerHour = 2.2369362921
+    private let supportsBackgroundLocation = Bundle.main.supportsBackgroundLocationUpdates
 
     var speedText: String {
-        "\(speedMPH, specifier: "%.1f") mph"
+        String(format: "%.1f mph", speedMPH)
     }
 
     var statusText: String {
@@ -118,6 +200,14 @@ private final class SpeedMonitor: NSObject, ObservableObject {
         }
     }
 
+    var backgroundStatusText: String {
+        if supportsBackgroundLocation {
+            return isBackgroundLocationEnabled ? "GPS em plano de fundo ativado." : "Preparando GPS em plano de fundo."
+        }
+
+        return "Para plano de fundo, ative Background Modes > Location updates no target."
+    }
+
     override init() {
         super.init()
 
@@ -125,7 +215,17 @@ private final class SpeedMonitor: NSObject, ObservableObject {
         locationManager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
         locationManager.activityType = .fitness
         locationManager.distanceFilter = kCLDistanceFilterNone
+        locationManager.pausesLocationUpdatesAutomatically = false
+        locationManager.showsBackgroundLocationIndicator = true
         authorizationStatus = locationManager.authorizationStatus
+    }
+
+    func requestPermissionOnLaunch() {
+        authorizationStatus = locationManager.authorizationStatus
+
+        if authorizationStatus == .notDetermined {
+            locationManager.requestWhenInUseAuthorization()
+        }
     }
 
     func start() {
@@ -133,6 +233,7 @@ private final class SpeedMonitor: NSObject, ObservableObject {
         case .notDetermined:
             locationManager.requestWhenInUseAuthorization()
         case .authorizedAlways, .authorizedWhenInUse:
+            enableBackgroundLocationIfAvailable()
             locationManager.startUpdatingLocation()
         case .restricted, .denied:
             stop()
@@ -143,6 +244,22 @@ private final class SpeedMonitor: NSObject, ObservableObject {
 
     func stop() {
         locationManager.stopUpdatingLocation()
+    }
+
+    func prepareForViewDisappearance() {
+        if !supportsBackgroundLocation {
+            stop()
+        }
+    }
+
+    private func enableBackgroundLocationIfAvailable() {
+        guard supportsBackgroundLocation else {
+            isBackgroundLocationEnabled = false
+            return
+        }
+
+        locationManager.allowsBackgroundLocationUpdates = true
+        isBackgroundLocationEnabled = true
     }
 }
 
@@ -165,37 +282,13 @@ extension SpeedMonitor: CLLocationManagerDelegate {
     }
 }
 
-private struct SystemVolumeView: UIViewRepresentable {
-    let volume: Float
-
-    func makeUIView(context: Context) -> MPVolumeView {
-        let volumeView = MPVolumeView(frame: .zero)
-        volumeView.showsRouteButton = false
-        volumeView.showsVolumeSlider = true
-        return volumeView
-    }
-
-    func updateUIView(_ volumeView: MPVolumeView, context: Context) {
-        setVolume(volume, in: volumeView)
-    }
-
-    private func setVolume(_ volume: Float, in volumeView: MPVolumeView) {
-        let clampedVolume = min(max(volume, 0), 1)
-
-        if let slider = volumeView.volumeSlider {
-            slider.setValue(clampedVolume, animated: false)
-            slider.sendActions(for: .touchUpInside)
-        } else {
-            DispatchQueue.main.async {
-                setVolume(clampedVolume, in: volumeView)
-            }
+private extension Bundle {
+    var supportsBackgroundLocationUpdates: Bool {
+        guard let backgroundModes = object(forInfoDictionaryKey: "UIBackgroundModes") as? [String] else {
+            return false
         }
-    }
-}
 
-private extension MPVolumeView {
-    var volumeSlider: UISlider? {
-        subviews.compactMap { $0 as? UISlider }.first
+        return backgroundModes.contains("location")
     }
 }
 
