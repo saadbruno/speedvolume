@@ -36,8 +36,6 @@ final class SpeedLiveActivityController {
     }
 
     func end() async {
-        guard let activity else { return }
-
         let content = ActivityContent(
             state: SpeedActivityAttributes.ContentState(
                 speedMPH: 0,
@@ -47,7 +45,14 @@ final class SpeedLiveActivityController {
             staleDate: nil
         )
 
-        await activity.end(content, dismissalPolicy: .immediate)
+        if let activity {
+            await activity.end(content, dismissalPolicy: .immediate)
+        }
+
+        for activity in Activity<SpeedActivityAttributes>.activities {
+            await activity.end(content, dismissalPolicy: .immediate)
+        }
+
         self.activity = nil
         isRunning = false
         statusText = "Live Activity encerrada."

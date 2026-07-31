@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import UIKit
 
 @main
 struct speedvolumeApp: App {
@@ -27,6 +28,14 @@ struct speedvolumeApp: App {
                         speedMPH: speedMonitor.speedMPH,
                         isDuckingEnabled: true
                     )
+                }
+                .onReceive(NotificationCenter.default.publisher(for: UIApplication.willTerminateNotification)) { _ in
+                    speedMonitor.stopForUserTermination()
+                    audioDucking.disableDucking()
+
+                    Task {
+                        await liveActivity.end()
+                    }
                 }
         }
     }

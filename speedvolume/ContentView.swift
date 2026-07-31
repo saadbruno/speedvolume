@@ -246,6 +246,14 @@ final class SpeedMonitor: NSObject {
         locationManager.stopUpdatingLocation()
     }
 
+    func stopForUserTermination() {
+        locationManager.stopUpdatingLocation()
+        locationManager.allowsBackgroundLocationUpdates = false
+        isBackgroundLocationEnabled = false
+        speedMPH = 0
+        lastError = nil
+    }
+
     func prepareForViewDisappearance() {
         if !supportsBackgroundLocation {
             stop()
